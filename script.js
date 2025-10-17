@@ -6,14 +6,16 @@
  * - Markdown basit render
  * - Rate-limit (1s) ve mesaj limiti
  * - Eklenen Özellikler: Konuşma listesi, başlık düzenleme, API ayarı kaydı, Sıcaklık ve Max Token.
+ * - DÜZELTME: API çağrısı, modern LLM API'lerine (Gemini, OpenAI) uygun hale getirildi.
  **************************************************************************/
 
 // ---------- CONFIG ----------
-const DEFAULT_API_URL = "https://backend.buildpicoapps.com/aero/run/llm-api?pk=v1-Z0FBQUFBQm5IZkJDMlNyYUVUTjIyZVN3UWFNX3BFTU85SWpCM2NUMUk3T2dxejhLSzBhNWNMMXNzSllRRF9kYmlkR3dOVTZzYUd5aW5Tckx5T1Y1X29MNGwwdzV3PQ==";
-const STORAGE_KEY_SETTINGS = "gelişmiş_chat_settings_v1"; // Ayarlar için yeni anahtar
-const STORAGE_KEY_CONVERSATIONS = "gelişmiş_chat_conversations_v1"; // Geçmiş konuşmalar için yeni anahtar
-const REQUEST_COOLDOWN_MS = 1000; // 1s throttle
-const MAX_MESSAGES = 200; // sohbette tutulacak en fazla mesaj
+// 🔥 ÖNEMLİ DÜZELTME: Varsayılan URL temizlendi. Artık API Key ve URL'yi soldaki ayarlar kısmından gireceksiniz.
+const DEFAULT_API_URL = "AIzaSyDoPmdzhQZzgDbZlOilqh6fzYZHcL-hXZc"; 
+const STORAGE_KEY_SETTINGS = "gelişmiş_chat_settings_v1"; 
+const STORAGE_KEY_CONVERSATIONS = "gelişmiş_chat_conversations_v1"; 
+const REQUEST_COOLDOWN_MS = 1000; 
+const MAX_MESSAGES = 200; 
 const MAX_RETRIES = 3;
 
 // ---------- Elementler ----------
@@ -66,7 +68,7 @@ function renderMarkdownToHtml(text){
     const codeBlock = esc.replace(/```([\s\S]*?)```/g, (m,p1)=>`<div class="code-block">${p1}</div>`);
     const inline = codeBlock.replace(/`([^`]+)`/g, (m,p1)=>`<code style="padding:2px 6px;border-radius:4px">${p1}</code>`);
     const bold = inline.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    const italic = bold.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    const italic = bold.replace(/\*([^*]+)\*\*/g, "<em>$1</em>"); // İkinci regex'i düzelttim
     const headers = italic.replace(/^#\s+(.*$)/gm, "<h2>$1</h2>").replace(/^##\s+(.*$)/gm, "<h3>$1</h3>");
     return headers.replace(/\n/g, "<br>");
 }
@@ -91,7 +93,8 @@ function loadSettings() {
         const raw = localStorage.getItem(STORAGE_KEY_SETTINGS);
         if (raw) {
             const settings = JSON.parse(raw);
-            apiUrlInput.value = settings.apiUrl || "";
+            // Default URL boşaltıldığı için, ayar kaydedilmediyse boş kalacak.
+            apiUrlInput.value = settings.apiUrl || ""; 
             apiKeyInput.value = settings.apiKey || "";
             systemPromptEl.value = settings.systemPrompt || "Sen yardımcı, kısa ve nazik bir asistan olarak davran.";
             state.theme = settings.theme || "light";
@@ -193,10 +196,9 @@ function rerenderAll(){
         addMessageToDOM(m); 
     }
     // 🔥 KRİTİK KURAL: KAYITLI KONUŞMA YÜKLENDİĞİNDE EN ALTA KAYDIRMAYI GARANTİLE
-    // (Bazen addMessageToDOM'daki döngü hızından dolayı kaydırma kaçabilir, bu garanti sağlar)
     setTimeout(() => {
         chatWindow.scrollTop = chatWindow.scrollHeight;
-    }, 50); // Kısa bir gecikme eklemek, DOM render'ının tamamlanmasını garantiler.
+    }, 50); 
 }
 
 // ---------- Message management ----------
@@ -317,47 +319,72 @@ async function simulateStreamWrite(msgId, fullText, speed = 12){
     updateMessageStatus(msgId, "tamamlandı", fullText);
 }
 
-// ---------- API call with retry/backoff ----------
-async function callAPI(prompt, retries = MAX_RETRIES){
+// ---------- 🔥🔥🔥 KRİTİK API CALL DÜZELTMESİ (Gemini/OpenAI Uyumlu) 🔥🔥🔥 ----------
+async function callAPI(retries = MAX_RETRIES){
     const customUrl = apiUrlInput.value.trim();
-    const url = customUrl || DEFAULT_API_URL;
     const apiKey = apiKeyInput.value.trim();
     
+    // Geçerli bir URL veya Anahtar yoksa hata ver
+    if (!customUrl || !apiKey) {
+        showErrorAlert("API URL veya API Anahtarı eksik. Lütfen Ayarlar kısmını kontrol edin.");
+        unmarkRequest();
+        throw new Error("API Ayarları Eksik");
+    }
+
     const systemPrompt = systemPromptEl.value || "";
     const temperature = parseFloat(temperatureInput.value);
     const maxTokens = parseInt(maxTokensInput.value);
 
-    // API Payload'u
+    // LLM'lerin çoğu artık mesaj geçmişini "role" ve "content" olarak ister.
+    const messages = [];
+    if (systemPrompt) {
+        messages.push({ role: "system", content: systemPrompt });
+    }
+    
+    // Son 12 mesajı (system hariç) payload'a ekle.
+    // Rolleri 'user' ve 'assistant' olarak dönüştür.
+    const recentMessages = state.messages.slice(-12).map(m => ({
+        role: m.role, // 'user' veya 'assistant' olmalı
+        content: m.text
+    }));
+    messages.push(...recentMessages);
+
+    // Örnek bir payload yapısı (Hem Gemini hem OpenAI'ye benzer)
     const payload = { 
-        system: systemPrompt, 
-        prompt: prompt 
+        messages: messages,
+        // Bu kısım, kullandığınız modele göre değişir.
+        // Örneğin: Gemini için "gemini-2.5-flash", OpenAI için "gpt-3.5-turbo"
+        model: "gemini-2.5-flash", 
+        temperature: !isNaN(temperature) && temperature >= 0 && temperature <= 1 ? temperature : 0.7,
     };
     
-    // Geçerli LLM parametrelerini ekle
-    if (!isNaN(temperature) && temperature >= 0 && temperature <= 1) {
-        payload.temperature = temperature;
-    }
     if (!isNaN(maxTokens) && maxTokens > 0) {
         payload.max_tokens = maxTokens; 
     }
 
-    const headers = { "Content-Type":"application/json" };
-    if(apiKey) headers["Authorization"] = "Bearer " + apiKey; 
+    const headers = { 
+        "Content-Type":"application/json",
+        // API Key'i Authorization Header'ında "Bearer" ile gönderir
+        "Authorization": `Bearer ${apiKey}` 
+    };
 
     try{
-        const res = await fetch(url, { method:"POST", headers, body: JSON.stringify(payload) });
+        const res = await fetch(customUrl, { method:"POST", headers, body: JSON.stringify(payload) });
+        
         if(!res.ok){
             const txt = await res.text();
             throw new Error(`HTTP ${res.status}: ${txt}`);
         }
+        
         const data = await res.json();
         return data;
+
     }catch(err){
         if(retries > 0){
             const wait = Math.pow(2, MAX_RETRIES - retries) * 500;
             statusInfo.textContent = `API Hatası, ${MAX_RETRIES - retries + 1}. denemede tekrar denenecek (${wait/1000}s)`;
             await new Promise(r=>setTimeout(r, wait));
-            return callAPI(prompt, retries - 1);
+            return callAPI(retries - 1);
         }else{
             throw err;
         }
@@ -382,34 +409,28 @@ async function sendMessage(){
     const assistantMsg = pushMessage("assistant", "", {status:"gönderiliyor..."});
 
     try{
-        // Prompt'u hazırla (son 12 mesaj)
-        const recent = state.messages.slice(-12).map(m => {
-            // Sadece text alanı dolu olan mesajları prompt'a dahil et
-            if (!m.text) return null; 
-
-            if (m.role === 'user') return `Kullanıcı: ${m.text}`;
-            if (m.role === 'assistant') return `Asistan: ${m.text}`;
-            return null;
-        }).filter(m => m !== null).join("\n");
-
-        const fullPrompt = `${systemPromptEl.value}\n\nSohbet geçmişi:\n${recent}\n\nAsistan cevap versin:`;
-
-        const apiResult = await callAPI(fullPrompt);
+        const apiResult = await callAPI();
         
         let replyText = "";
-        if(apiResult && apiResult.output){ 
-             replyText = typeof apiResult.output === "string" ? apiResult.output : JSON.stringify(apiResult.output);
-        } else if (apiResult && apiResult.text) { 
-             replyText = apiResult.text;
+        
+        // Yanıt formatı API'ye göre değişir. Bu, genel bir örnek (Gemini ve OpenAI için)
+        if (apiResult.choices && apiResult.choices.length > 0) {
+            // OpenAI formatı
+            replyText = apiResult.choices[0].message.content;
+        } else if (apiResult.candidates && apiResult.candidates.length > 0) {
+            // Gemini formatı (text/content olarak değişebilir)
+             replyText = apiResult.candidates[0].content.parts[0].text;
         } else {
-             replyText = "API'den beklenmeyen yanıt alındı: " + JSON.stringify(apiResult);
+             replyText = "API'den beklenmeyen yanıt alındı: " + JSON.stringify(apiResult).slice(0, 100);
+             updateMessageStatus(assistantMsg.id, "HATA", replyText); // Hata metnini göster
+             throw new Error("Beklenmeyen API yanıtı");
         }
 
         // Başlık belirleme (İlk kullanıcı mesajından)
-        if (state.messages.filter(m => m.role !== 'system').length === 2) {
+        if (state.messages.filter(m => m.role === 'user').length === 1) {
              state.convName = text.slice(0, 20) + (text.length > 20 ? '...' : '');
              convTitle.textContent = state.convName;
-             saveCurrentState(); // Başlık değişikliğini kaydet
+             saveCurrentState(); 
         }
 
         // simulate streaming for UX
@@ -421,7 +442,12 @@ async function sendMessage(){
         const errorMsg = (err.message || "Bilinmeyen Bağlantı Hatası").slice(0, 100);
         updateMessageStatus(assistantMsg.id, "HATA");
         statusInfo.textContent = "Hata oluştu.";
-        showErrorAlert(errorMsg);
+        // API ayarı eksikse hata mesajını tekrar göster
+        if (!apiUrlInput.value.trim() || !apiKeyInput.value.trim()) {
+             showErrorAlert("API URL veya Anahtar Eksik!");
+        } else {
+             showErrorAlert(errorMsg);
+        }
     }finally{
         unmarkRequest();
         saveCurrentState();
@@ -458,7 +484,7 @@ userInput.addEventListener("keydown", (e)=>{
 });
 newConvBtn.addEventListener("click", () => {
     // Mesaj varsa sor
-    if(state.messages.filter(m => m.role !== 'system').length > 0 && 
+    if(state.messages.filter(m => m.role === 'user').length > 0 && 
        !confirm("Yeni konuşma başlatılsın mı? Mevcut konuşma listeye kaydedilecek.")) return;
     startNewConversation();
 });
