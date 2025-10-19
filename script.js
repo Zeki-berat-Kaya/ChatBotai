@@ -11,7 +11,7 @@
 
 // ---------- CONFIG ----------
 // 🔥 ÖNEMLİ DÜZELTME: Varsayılan URL temizlendi. Artık API Key ve URL'yi soldaki ayarlar kısmından gireceksiniz.
-const DEFAULT_API_URL = "AIzaSyDoPmdzhQZzgDbZlOilqh6fzYZHcL-hXZc"; 
+
 const STORAGE_KEY_SETTINGS = "gelişmiş_chat_settings_v1"; 
 const STORAGE_KEY_CONVERSATIONS = "gelişmiş_chat_conversations_v1"; 
 const REQUEST_COOLDOWN_MS = 1000; 
@@ -589,3 +589,4 @@ init();
 
 // ---------- Accessibility: focus on textarea when clicking panel ----------
 chatWindow.addEventListener("click", ()=> userInput.focus());
+
